@@ -7,3 +7,4 @@ Chen\*, Ong\*, &amp; Coppola (in prep). (Title TBD)
 
 
 
+- [3D Scatterplot](https://rawgit.com/desmond-ong/resourceUse/master/plots/3d_scatterplot.html)
