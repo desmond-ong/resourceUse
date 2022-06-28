@@ -1,0 +1,1210 @@
+---
+title: 'Explore, Exploit, and Prune in the Classroom: Strategic Resource Management
+  Behaviors Predict Performance'
+author: "Patricia Chen, Desmond Ong, Jessica Ng, Brian Coppola"
+date: "November 24, 2020"
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+
+```{r preamble, echo=FALSE, warning=FALSE, message=FALSE, eval=TRUE}
+## Set your working directory
+setwd("~/Dropbox/R Working Directory")
+
+
+#library(plyr); # to check plotly code
+library(dplyr); library(tidyr)
+library(ggplot2)
+library(corrplot)
+library(reshape2)
+library(lme4)
+library(pander) # for tables
+#library(lmerTest)
+
+library(MuMIn) # for getting R^2 values using r.squaredGLMM(), after https://ecologyforacrowdedplanet.wordpress.com/2013/08/27/r-squared-in-mixed-models-the-easy-way/ and following Nakagawa and Schielzeth (2013) and Johnson (2014) 
+library(doBy)
+library(plotly)
+
+# helper function taken from http://www.cookbook-r.com/Graphs/Plotting_means_and_error_bars_(ggplot2)/
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+  library(plyr)
+  
+  # New version of length which can handle NA's: if na.rm==T, don't count them
+  length2 <- function (x, na.rm=FALSE) {
+    if (na.rm) sum(!is.na(x))
+    else       length(x)
+  }
+  
+  # This does the summary. For each group's data frame, return a vector with
+  # N, mean, and sd
+  datac <- ddply(data, groupvars, .drop=.drop,
+                 .fun = function(xx, col) {
+                   c(N    = length2(xx[[col]], na.rm=na.rm),
+                     mean = mean   (xx[[col]], na.rm=na.rm),
+                     sd   = sd     (xx[[col]], na.rm=na.rm)
+                   )
+                 },
+                 measurevar
+  )
+  
+  # Rename the "mean" column    
+  datac <- rename(datac, c("mean" = measurevar))
+  
+  datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+  
+  # Confidence interval multiplier for standard error
+  # Calculate t-statistic for confidence interval: 
+  # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+  ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+  datac$ci <- datac$se * ciMult
+  
+  return(datac)
+}
+
+ # helper function
+reportStatisticsInText_lmer <- function(coefficientTable, variableName) { 
+  thisRow = coefficientTable[variableName,]
+  thisString = paste("b = ", format(thisRow[1], digits=3), 
+        " [", format(thisRow[1] - 1.96*thisRow[2], digits=3), 
+        ", ", format(thisRow[1] + 1.96*thisRow[2], digits=3), 
+        "], t(", format(thisRow[3], digits=2), ") = ", format(thisRow[4], digits=3), sep="")
+  if(thisRow[5]<0.001) {
+    thisString = paste(thisString, ", p<.001", sep="")
+  } else {
+    thisString = paste(thisString, ", p = ", format(thisRow[5], digits=3), sep="")
+  }
+  return(thisString)
+}
+
+reportStatisticsInText_lm <- function(coefficientTable, variableName) { 
+  thisRow = coefficientTable[variableName,]
+  thisString = paste("b = ", format(thisRow[1], digits=3), 
+        " [", format(thisRow[1] - 1.96*thisRow[2], digits=3), 
+        ", ", format(thisRow[1] + 1.96*thisRow[2], digits=3), 
+        "], t = ", format(thisRow[3], digits=3), sep="")
+  if(thisRow[4]<0.001) {
+    thisString = paste(thisString, ", p<.001", sep="")
+  } else {
+    thisString = paste(thisString, ", p = ", format(thisRow[4], digits=3), sep="")
+  }
+  return(thisString)
+}
+
+
+
+
+## reading in data file
+d <- read.csv("all_years_combined_clean.csv")
+
+```
+
+
+
+# Introduction
+
+This R Markdown file reproduces all the analyses, tables and figures produced in: 
+
+Chen, P., Ong, D. C., Ng, J., & Coppola, B. (in press). Explore, Exploit, and Prune in the Classroom: Strategic Resource Management Behaviors Predict Performance. <i>AERA Open</i>.
+
+
+# Methods
+
+### Table 1: Numbers and Percentages of Students who Participated Across the 4 Consecutive Cohorts
+
+```{r making-demographic-table-1, echo=FALSE, results="as.is", eval=TRUE}
+
+calculate_response_rate <- function(df, year, exam=NA) {
+  if(is.na(exam)) {
+    # all the students:
+    return(nrow(subset(df, df$Year==year)))
+  } else if(exam==0) {
+    # any exam; i.e., either of: 1 or 2 or 3
+    return(sum(!is.na(subset(df, df$Year==year)$E1_sumres) |
+                 !is.na(subset(df, df$Year==year)$E2_sumres) |
+                 !is.na(subset(df, df$Year==year)$E3_sumres)))
+  } else if(exam==1) {
+    return(sum(!is.na(subset(df, df$Year==year)$E1_sumres)))
+  } else if(exam==2) {
+    return(sum(!is.na(subset(df, df$Year==year)$E2_sumres)))
+  } else if(exam==3) {
+    return(sum(!is.na(subset(df, df$Year==year)$E3_sumres)))
+  } else if(exam==6) {
+    # ALL exams; i.e., completed all of 1 and 2 and 3
+    return(sum(!is.na(subset(df, df$Year==year)$E1_sumres) &
+                 !is.na(subset(df, df$Year==year)$E2_sumres) &
+                 !is.na(subset(df, df$Year==year)$E3_sumres)))
+  }
+}
+
+format_table <- function(x, digits=4) {return(format(x, digits=digits))}
+
+format_table_2 <- function(x, y, digits=4) { return(paste(x, " (", format_table(x/y*100,digits), "%)", sep=""))}
+
+return_demographic <- function(df, year, demographic, value) {
+  tempdf = subset(df, df$Year==year & (!is.na(df$E1_sumres) |
+                 !is.na(df$E2_sumres) |
+                 !is.na(df$E3_sumres)))
+  if(is.na(value)) {
+    return(sum(is.na(tempdf[,demographic])))
+  } else {
+    return(table(tempdf[,demographic])[value])
+  }
+}
+
+responseRatesTableDF = data.frame(
+  ResponseRates = c("Enrolled in class", "Exam 1", "Exam 2", "Exam 3", "At least one exam survey", "All three exam surveys"),
+  Year1 = c(calculate_response_rate(d, year=1),
+            format_table_2(calculate_response_rate(d, year=1, 1),
+                           calculate_response_rate(d, year=1)),
+            format_table_2(calculate_response_rate(d, year=1, 2),
+                           calculate_response_rate(d, year=1)),
+            format_table_2(calculate_response_rate(d, year=1, 3),
+                           calculate_response_rate(d, year=1)),
+            format_table_2(calculate_response_rate(d, year=1, 0),
+                           calculate_response_rate(d, year=1)),
+            format_table_2(calculate_response_rate(d, year=1, 6),
+                           calculate_response_rate(d, year=1))
+            ),
+  Year2 = c(calculate_response_rate(d, year=2),
+            format_table_2(calculate_response_rate(d, year=2, 1),
+                           calculate_response_rate(d, year=2)),
+            format_table_2(calculate_response_rate(d, year=2, 2),
+                           calculate_response_rate(d, year=2)),
+            format_table_2(calculate_response_rate(d, year=2, 3),
+                           calculate_response_rate(d, year=2)),
+            format_table_2(calculate_response_rate(d, year=2, 0),
+                           calculate_response_rate(d, year=2)),
+            format_table_2(calculate_response_rate(d, year=2, 6),
+                           calculate_response_rate(d, year=2))),
+  Year3 = c(calculate_response_rate(d, year=3),
+            format_table_2(calculate_response_rate(d, year=3, 1),
+                           calculate_response_rate(d, year=3)),
+            format_table_2(calculate_response_rate(d, year=3, 2),
+                           calculate_response_rate(d, year=3)),
+            format_table_2(calculate_response_rate(d, year=3, 3),
+                           calculate_response_rate(d, year=3)),
+            format_table_2(calculate_response_rate(d, year=3, 0),
+                           calculate_response_rate(d, year=3)),
+            format_table_2(calculate_response_rate(d, year=3, 6),
+                           calculate_response_rate(d, year=3))),
+  Year4 = c(calculate_response_rate(d, year=4),
+            format_table_2(calculate_response_rate(d, year=4, 1),
+                           calculate_response_rate(d, year=4)),
+            format_table_2(calculate_response_rate(d, year=4, 2),
+                           calculate_response_rate(d, year=4)),
+            format_table_2(calculate_response_rate(d, year=4, 3),
+                           calculate_response_rate(d, year=4)),
+            format_table_2(calculate_response_rate(d, year=4, 0),
+                           calculate_response_rate(d, year=4)),
+            format_table_2(calculate_response_rate(d, year=4, 6),
+                           calculate_response_rate(d, year=4)))
+)
+
+pander(responseRatesTableDF, split.table=120)
+
+# drop all not in study (i.e., didn't take at least 1 survey).
+d = subset(d, !is.na(d$E1_sumres) | !is.na(d$E2_sumres) | !is.na(d$E3_sumres))
+```
+
+
+Note that Table 2 <i>(Descriptive Frequencies of Resource Use on the Prior Exam (Exams 1 and 2) and Percentages of Resources Explored, Exploited, and Pruned Out of Those Possible (on the Subsequent Exams 2 and 3, Respectively), Aggregating Across Cohorts))</i> is found later in the file due to the the "flow" of the code.
+
+
+```{r combined-exams-dataset, echo=FALSE, eval=TRUE}
+# dCombinedExams has, for each observation, a "current" and "past" set of variables
+# this is to calculate "Explore", "Exploit", "Prune"
+
+dCombinedExams = data.frame(
+  Year = factor(c(d$Year, d$Year), labels=c(1, 2, 3, 4)),
+  Sex = rep(d$Sex, 2),
+  Ethnic.Group.Descrshort = as.factor(rep(d$Ethnic.Group.Descrshort, 2)),
+  ID = c(d$ID, d$ID),
+  Classperf = c(d$TOT., d$TOT.),
+  grade = c(d$grade, d$grade),
+  Examtotalscore = c(d$E., d$E.),
+  examNum = rep(c(2,3), each=nrow(d)),
+  currentScorePercent = c(d$E2percent, d$E3percent),
+  pastScorePercent = c(d$E1percent, d$E2percent),
+  #examPerf_Slope = c(d$examPerf_Slope, d$examPerf_Slope),
+  #examPerf_Intercept = c(d$examPerf_Intercept, d$examPerf_Intercept),
+  current_r1_lec_max = c(d$E2_r1_lec_max, d$E3_r1_lec_max),
+  past_r1_lec_max = c(d$E1_r1_lec_max, d$E2_r1_lec_max),
+  current_r2_dis = c(d$E2_r2_dis, d$E3_r2_dis),
+  past_r2_dis = c(d$E1_r2_dis, d$E2_r2_dis),
+  current_r3_gsirec = c(d$E2_r3_gsirec, d$E3_r3_gsirec),
+  past_r3_gsirec = c(d$E1_r3_gsirec, d$E2_r3_gsirec),
+  current_r4_slc = c( d$E2_r4_slc, d$E3_r4_slc),
+  past_r4_slc = c(d$E1_r4_slc, d$E2_r4_slc),
+  current_r5_lab = c(d$E2_r5_lab, d$E3_r5_lab),
+  past_r5_lab = c(d$E1_r5_lab, d$E2_r5_lab),
+  current_r6_slcgrp = c(d$E2_r6_slcgrp, d$E3_r6_slcgrp),
+  past_r6_slcgrp = c(d$E1_r6_slcgrp, d$E2_r6_slcgrp),
+  current_r7_peergrp = c(d$E2_r7_peergrp, d$E3_r7_peergrp),
+  past_r7_peergrp = c(d$E1_r7_peergrp, d$E2_r7_peergrp),
+  current_r8_self = c(d$E2_r8_self, d$E3_r8_self),
+  past_r8_self = c(d$E1_r8_self, d$E2_r8_self),
+  current_r9_textbk = c(d$E2_r9_textbk, d$E3_r9_textbk),
+  past_r9_textbk = c(d$E1_r9_textbk, d$E2_r9_textbk),
+  current_r10_txtbkprob = c(d$E2_r10_txtbkprob, d$E3_r10_txtbkprob),
+  past_r10_txtbkprob = c(d$E1_r10_txtbkprob, d$E2_r10_txtbkprob),
+  current_r11_coursepack = c(d$E2_r11_coursepack, d$E3_r11_coursepack),
+  past_r11_coursepack = c(d$E1_r11_coursepack, d$E2_r11_coursepack),
+  current_r12_podcasts_max = c(d$E2_r12_podcasts_max, d$E3_r12_podcasts_max),
+  past_r12_podcasts_max = c(d$E1_r12_podcasts_max, d$E2_r12_podcasts_max),
+  current_sumUsefulness = c(d$E2_sumUsefulness, d$E3_sumUsefulness),
+  past_sumUsefulness = c(d$E1_sumUsefulness, d$E2_sumUsefulness),
+  current_meanUsefulness = c(d$E2_meanUsefulness, d$E3_meanUsefulness),
+  past_meanUsefulness = c(d$E1_meanUsefulness, d$E2_meanUsefulness),
+  #sumresUsefulness_Slope = c(d$sumresUsefulness_Slope, d$sumresUsefulness_Slope),
+  #sumresUsefulness_Intercept = c(d$sumresUsefulness_Intercept, d$sumresUsefulness_Intercept),
+  #meanresUsefulness_Slope = c(d$meanresUsefulness_Slope, d$meanresUsefulness_Slope),
+  #meanresUsefulness_Intercept = c(d$meanresUsefulness_Intercept, d$meanresUsefulness_Intercept),
+  current_sumres = c(d$E2_sumres, d$E3_sumres),
+  past_sumres = c(d$E1_sumres, d$E2_sumres),
+  current_sumresUseful = c(d$E2_sumresUseful, d$E3_sumresUseful),
+  past_sumresUseful = c(d$E1_sumresUseful, d$E2_sumresUseful)
+)
+
+dCombinedExams$current_sumresUseless = rowSums(
+  (dCombinedExams[,c("current_r1_lec_max", "current_r2_dis", "current_r3_gsirec", "current_r4_slc", "current_r5_lab", "current_r6_slcgrp", "current_r7_peergrp", "current_r8_self", "current_r9_textbk", "current_r10_txtbkprob", "current_r11_coursepack", "current_r12_podcasts_max")]<3) & 
+    (dCombinedExams[,c("current_r1_lec_max", "current_r2_dis", "current_r3_gsirec", "current_r4_slc", "current_r5_lab", "current_r6_slcgrp", "current_r7_peergrp", "current_r8_self", "current_r9_textbk", "current_r10_txtbkprob", "current_r11_coursepack", "current_r12_podcasts_max")]>0))
+
+dCombinedExams$past_sumresUseless = rowSums(
+  (dCombinedExams[,c("past_r1_lec_max", "past_r2_dis", "past_r3_gsirec", "past_r4_slc", "past_r5_lab", "past_r6_slcgrp", "past_r7_peergrp", "past_r8_self", "past_r9_textbk", "past_r10_txtbkprob", "past_r11_coursepack", "past_r12_podcasts_max")]<3) &
+    (dCombinedExams[,c("past_r1_lec_max", "past_r2_dis", "past_r3_gsirec", "past_r4_slc", "past_r5_lab", "past_r6_slcgrp", "past_r7_peergrp", "past_r8_self", "past_r9_textbk", "past_r10_txtbkprob", "past_r11_coursepack", "past_r12_podcasts_max")]>0))
+
+
+
+
+###### Explore, Exploit, Prune based on UF ratings ######
+
+calculateExploreExploitPruneBehavior <- function(myDataFrame, varName, behaviorType) { 
+  past_behavior = myDataFrame[, paste("past_", varName, sep="")]
+  current_behavior = myDataFrame[, paste("current_", varName, sep="")]
+  if(behaviorType=="explore") {
+    classification = past_behavior==0 & current_behavior>0
+  } else if(behaviorType=="exploit") {
+    classification = past_behavior>3 & current_behavior>0
+  } else if(behaviorType=="fail_exploit") {
+    classification = past_behavior>3 & current_behavior==0
+  } else if(behaviorType=="prune") {
+    classification = past_behavior>0 & past_behavior<3 & current_behavior==0
+  } else if(behaviorType=="fail_prune") {
+    classification = past_behavior>0 & past_behavior<3 & current_behavior>0
+  }  
+  
+  if(behaviorType=="explore_STRICT") { # This additional strict criteria affects calculation of resources only in Exam 3: count as explore only IFF they had not used it on 1 AND 2.
+    classification = past_behavior==0 & current_behavior>0
+    
+    # based on the way I structured it, the third exam is the 2nd half:
+    
+    stricter_use_for_third_exam = (past_behavior[1:(length(past_behavior)/2)] == 0) & ( past_behavior[(length(past_behavior)/2 + 1):(length(past_behavior))] == 0 ) & (current_behavior[(length(current_behavior)/2 + 1):(length(current_behavior))] > 0)
+    
+    stricter_use_for_third_exam[
+      is.na(past_behavior[1:(length(past_behavior)/2)]) | is.na(past_behavior[(length(past_behavior)/2 + 1):(length(past_behavior))]) | is.na(current_behavior[(length(current_behavior)/2 + 1):(length(current_behavior))])
+    ] <- NA
+    
+    classification[(length(current_behavior)/2 + 1):(length(current_behavior))] = stricter_use_for_third_exam
+    
+  } else {
+    
+  
+  # makes sure that if any of the past or current behavior is NA, then the classification (true/false) will be set to NA.
+  # this line is necessary because of a weird quirk in R
+  #   NA & TRUE returns NA (as expected for this purpose),
+  #   NA & FALSE returns FALSE (which is not expected, so I have to manually force those to NA)
+  classification[is.na(past_behavior) | is.na(current_behavior)] <- NA
+  }
+  return(classification)
+}
+
+dCombinedExams$r1_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r1_lec_max', 'explore')
+dCombinedExams$r1_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r1_lec_max', 'exploit')
+dCombinedExams$r1_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r1_lec_max', 'prune')
+
+dCombinedExams$r2_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r2_dis', 'explore')
+dCombinedExams$r2_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r2_dis', 'exploit')
+dCombinedExams$r2_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r2_dis', 'prune')
+
+dCombinedExams$r3_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r3_gsirec', 'explore')
+dCombinedExams$r3_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r3_gsirec', 'exploit')
+dCombinedExams$r3_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r3_gsirec', 'prune')
+
+dCombinedExams$r4_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r4_slc', 'explore')
+dCombinedExams$r4_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r4_slc', 'exploit')
+dCombinedExams$r4_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r4_slc', 'prune')
+
+dCombinedExams$r5_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r5_lab', 'explore')
+dCombinedExams$r5_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r5_lab', 'exploit')
+dCombinedExams$r5_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r5_lab', 'prune')
+
+dCombinedExams$r6_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r6_slcgrp', 'explore')
+dCombinedExams$r6_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r6_slcgrp', 'exploit')
+dCombinedExams$r6_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r6_slcgrp', 'prune')
+
+dCombinedExams$r7_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r7_peergrp', 'explore')
+dCombinedExams$r7_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r7_peergrp', 'exploit')
+dCombinedExams$r7_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r7_peergrp', 'prune')
+
+dCombinedExams$r8_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r8_self', 'explore')
+dCombinedExams$r8_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r8_self', 'exploit')
+dCombinedExams$r8_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r8_self', 'prune')
+
+dCombinedExams$r9_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r9_textbk', 'explore')
+dCombinedExams$r9_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r9_textbk', 'exploit')
+dCombinedExams$r9_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r9_textbk', 'prune')
+
+dCombinedExams$r10_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r10_txtbkprob', 'explore')
+dCombinedExams$r10_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r10_txtbkprob', 'exploit')
+dCombinedExams$r10_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r10_txtbkprob', 'prune')
+
+dCombinedExams$r11_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r11_coursepack', 'explore')
+dCombinedExams$r11_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r11_coursepack', 'exploit')
+dCombinedExams$r11_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r11_coursepack', 'prune')
+
+dCombinedExams$r12_UF_explore = calculateExploreExploitPruneBehavior(dCombinedExams, 'r12_podcasts_max', 'explore')
+dCombinedExams$r12_UF_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r12_podcasts_max', 'exploit')
+dCombinedExams$r12_UF_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r12_podcasts_max', 'prune')
+
+
+
+
+
+dCombinedExams$sum_explore = rowSums(
+  dCombinedExams[,c("r1_UF_explore", "r2_UF_explore", "r3_UF_explore", "r4_UF_explore", 
+                    "r5_UF_explore", "r6_UF_explore", "r7_UF_explore", "r8_UF_explore", 
+                    "r9_UF_explore", "r10_UF_explore", "r11_UF_explore", "r12_UF_explore")], na.rm=T)
+
+dCombinedExams$sum_exploit = rowSums(
+  dCombinedExams[,c("r1_UF_exploit", "r2_UF_exploit", "r3_UF_exploit", "r4_UF_exploit", 
+                    "r5_UF_exploit", "r6_UF_exploit", "r7_UF_exploit", "r8_UF_exploit", 
+                    "r9_UF_exploit", "r10_UF_exploit", "r11_UF_exploit", "r12_UF_exploit")], na.rm=T)
+
+dCombinedExams$sum_prune = rowSums(
+  dCombinedExams[,c("r1_UF_prune", "r2_UF_prune", "r3_UF_prune", "r4_UF_prune", 
+                    "r5_UF_prune", "r6_UF_prune", "r7_UF_prune", "r8_UF_prune", 
+                    "r9_UF_prune", "r10_UF_prune", "r11_UF_prune", "r12_UF_prune")], na.rm=T)
+
+dCombinedExams$sum_exprexplprun = rowSums(dCombinedExams[,c("sum_explore", "sum_exploit", "sum_prune")], na.rm=T)
+
+
+dCombinedExams$sum_explore[is.na(dCombinedExams$current_sumres)] <- NA
+dCombinedExams$sum_explore[is.na(dCombinedExams$past_sumres)] <- NA
+dCombinedExams$sum_exploit[is.na(dCombinedExams$current_sumres)] <- NA
+dCombinedExams$sum_exploit[is.na(dCombinedExams$past_sumres)] <- NA
+dCombinedExams$sum_prune[is.na(dCombinedExams$current_sumres)] <- NA
+dCombinedExams$sum_prune[is.na(dCombinedExams$past_sumres)] <- NA
+dCombinedExams$sum_exprexplprun[is.na(dCombinedExams$current_sumres)] <- NA
+dCombinedExams$sum_exprexplprun[is.na(dCombinedExams$past_sumres)] <- NA
+
+
+### the following is using a stricter definition of explore, used in the robustness checks
+
+dCombinedExams$r1_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r1_lec_max', 'explore_STRICT')
+dCombinedExams$r2_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r2_dis', 'explore_STRICT')
+dCombinedExams$r3_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r3_gsirec', 'explore_STRICT')
+dCombinedExams$r4_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r4_slc', 'explore_STRICT')
+dCombinedExams$r5_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r5_lab', 'explore_STRICT')
+dCombinedExams$r6_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r6_slcgrp', 'explore_STRICT')
+dCombinedExams$r7_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r7_peergrp', 'explore_STRICT')
+dCombinedExams$r8_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r8_self', 'explore_STRICT')
+dCombinedExams$r9_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r9_textbk', 'explore_STRICT')
+dCombinedExams$r10_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r10_txtbkprob', 'explore_STRICT')
+dCombinedExams$r11_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r11_coursepack', 'explore_STRICT')
+dCombinedExams$r12_UF_explore_STRICT = calculateExploreExploitPruneBehavior(dCombinedExams, 'r12_podcasts_max', 'explore_STRICT')
+
+  dCombinedExams$r1_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r1_lec_max', 'fail_exploit')
+  dCombinedExams$r1_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r1_lec_max', 'fail_prune')
+  dCombinedExams$r2_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r2_dis', 'fail_exploit')
+  dCombinedExams$r2_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r2_dis', 'fail_prune')
+  dCombinedExams$r3_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r3_gsirec', 'fail_exploit')
+  dCombinedExams$r3_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r3_gsirec', 'fail_prune')
+  dCombinedExams$r4_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r4_slc', 'fail_exploit')
+  dCombinedExams$r4_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r4_slc', 'fail_prune')
+  dCombinedExams$r5_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r5_lab', 'fail_exploit')
+  dCombinedExams$r5_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r5_lab', 'fail_prune')
+  dCombinedExams$r6_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r6_slcgrp', 'fail_exploit')
+  dCombinedExams$r6_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r6_slcgrp', 'fail_prune')
+  dCombinedExams$r7_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r7_peergrp', 'fail_exploit')
+  dCombinedExams$r7_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r7_peergrp', 'fail_prune')
+  dCombinedExams$r8_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r8_self', 'fail_exploit')
+  dCombinedExams$r8_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r8_self', 'fail_prune')
+  dCombinedExams$r9_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r9_textbk', 'fail_exploit')
+  dCombinedExams$r9_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r9_textbk', 'fail_prune')
+  dCombinedExams$r10_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r10_txtbkprob', 'fail_exploit')
+  dCombinedExams$r10_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r10_txtbkprob', 'fail_prune')
+  dCombinedExams$r11_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r11_coursepack', 'fail_exploit')
+  dCombinedExams$r11_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r11_coursepack', 'fail_prune')
+  dCombinedExams$r12_fail_exploit = calculateExploreExploitPruneBehavior(dCombinedExams, 'r12_podcasts_max', 'fail_exploit')
+  dCombinedExams$r12_fail_prune = calculateExploreExploitPruneBehavior(dCombinedExams, 'r12_podcasts_max', 'fail_prune')
+
+  
+dCombinedExams$sum_explore_STRICT = rowSums(
+  dCombinedExams[,c("r1_UF_explore_STRICT", "r2_UF_explore_STRICT", "r3_UF_explore_STRICT", "r4_UF_explore_STRICT", 
+                    "r5_UF_explore_STRICT", "r6_UF_explore_STRICT", "r7_UF_explore_STRICT", "r8_UF_explore_STRICT", 
+                    "r9_UF_explore_STRICT", "r10_UF_explore_STRICT", "r11_UF_explore_STRICT", "r12_UF_explore_STRICT")], na.rm=T)
+
+dCombinedExams$sum_explore_STRICT[is.na(dCombinedExams$current_sumres)] <- NA
+dCombinedExams$sum_explore_STRICT[is.na(dCombinedExams$past_sumres)] <- NA
+
+
+```
+
+
+
+
+# Interleaved Methods and Results
+
+## Resource use over time. 
+
+To first analyze how students’ resource use changed over time, we fit a simple linear model predicting the number of resources used at a given time point, assuming a linear coefficient on time, an integer-valued variable (t = 1, 2, 3). We applied the same model to analyze how students’ reported mean usefulness ratings changed over time. These two models were estimated with random effects of individual students nested within cohort (year):
+
+$\text{NumResourcesUsed}_{i,t,y} = b_0 + b_1 t + u_{i,y} + u_y + \epsilon_{i,t,y}$
+
+$\text{MeanUsefulness}_{i,t,y} = b_0 + b_1 t + u_{i,y} + u_y + \epsilon_{i,t,y}$
+
+where $u_{i,y}$ is the student-specific random intercept nested within year, $u_y$ is a random intercept for year, and $\epsilon_{i,t,y}$ is the residual error term. In R syntax, the models are:
+
+
+```{r res-use-trajectory-over-time, echo=FALSE, eval=TRUE}
+dAllExams = data.frame(
+  ID = rep(d$ID, 3),
+  Year = rep(d$Year, 3),
+  examNum = rep(c(1,2,3), each=nrow(d)),
+  examScorePercent = c(d$E1percent, d$E2percent, d$E3percent),
+  numResUsed = c(d$E1_sumres, d$E2_sumres, d$E3_sumres),
+  meanUsefulness = c(d$E1_meanUsefulness, d$E2_meanUsefulness, d$E3_meanUsefulness),
+  sumUsefulness = c(d$E1_sumUsefulness, d$E2_sumUsefulness, d$E3_sumUsefulness))
+
+##### number of resources over time #####
+lmer_resourceUseOverTime = summary(lmerTest::lmer(numResUsed ~ examNum + (1+examNum|ID:Year) + (1+examNum|Year), dAllExams))
+
+##### mean usefulness over time #####
+lmer_meanUsefulnessOverTime = summary(lmerTest::lmer(meanUsefulness ~ examNum + (1|ID:Year) + (1|Year), dAllExams))
+
+```
+
+`lmer(numResUsed ~ examNum + (1|ID:Year) + (1|Year))`
+
+`lmer(meanUsefulness ~ examNum + (1|ID:Year) + (1|Year))`
+
+
+#### Results: Aggregate Patterns of Resource Use and Usefulness 
+
+We begin by describing how students in our study interacted with their resources. Students showed a decreasing linear trend in the number of resources that they used to study for each of their 3 exams (Equation 2a). Across all four cohorts, students started off using an average of `r format(mean(subset(dAllExams, dAllExams$examNum==1)$numResUsed, na.rm=T), digits=2)` (standard deviation, SD = `r format(sd(subset(dAllExams, dAllExams$examNum==1)$numResUsed, na.rm=T), digits=2)`) resources to study for Exam 1, `r format(mean(subset(dAllExams, dAllExams$examNum==2)$numResUsed, na.rm=T), digits=2)` (SD = `r format(sd(subset(dAllExams, dAllExams$examNum==2)$numResUsed, na.rm=T), digits=2)`) resources for Exam 2, and `r format(mean(subset(dAllExams, dAllExams$examNum==3)$numResUsed, na.rm=T), digits=2)` (SD = `r format(sd(subset(dAllExams, dAllExams$examNum==3)$numResUsed, na.rm=T), digits=2)`) resources for Exam 3, linear trend b = -.44, 95% CI = [-.47, -.42], p < .001. We illustrate students' use and usefulness ratings for the 12 kinds of resources in Figure 1, aggregated across cohorts and categorized by exam. On average, some resources (e.g., attending the lecture and using the coursepack) were used more than others (e.g., lecture podcasts, Science Learning Center)—not surprisingly, these tended to also be the resources that a large proportion of students rated as “extremely useful” for their learning.
+
+
+While this decreasing trend of number of resources used could be interpreted as decreasing motivation, our evidence suggests otherwise: Over the same period, students’ mean ratings of how useful their resources had been exhibited a positive linear trend over time—increasing from `r format(mean(subset(dAllExams, dAllExams$examNum==1)$meanUsefulness, na.rm=T), digits=3)` (SD = `r format(sd(subset(dAllExams, dAllExams$examNum==1)$meanUsefulness, na.rm=T), digits=3)`) on Exam 1, to `r format(mean(subset(dAllExams, dAllExams$examNum==2)$meanUsefulness, na.rm=T), digits=3)` (SD = `r format(sd(subset(dAllExams, dAllExams$examNum==2)$meanUsefulness, na.rm=T), digits=3)`) on Exam 2, and `r format(mean(subset(dAllExams, dAllExams$examNum==3)$meanUsefulness, na.rm=T), digits=3)` (SD = `r format(sd(subset(dAllExams, dAllExams$examNum==3)$meanUsefulness, na.rm=T), digits=3)`) on Exam 3, linear trend b = .06, [.05, .07], p < .001 (Equation 2b). A score of 4 on our 5-point scale corresponds to "useful". We inferred that, rather than necessarily being less invested, students were, on average, becoming possibly more focused and effective in their resource use over time. Evidence from our cognitive interviews with a randomly selected sample of students in the class who were not part of this study (see SOM “Survey Validation” for details) supports this idea that some students were strategically changing their resource use over time in the class. For example, one student shared that, “By exam 3 I wasn’t using [textbook problems]. I used those for the first exam, but found them not as helpful, so I stopped using those.” Next, we turn to how students increased their resource-use effectiveness by managing their resource use wisely from exam to exam.
+
+
+[stats dump:]
+
+- Resource usage across all 4 years:
+    - usage at examNum 1: M=`r format(mean(subset(dAllExams, dAllExams$examNum==1)$numResUsed, na.rm=T), digits=3)`, SD=`r format(sd(subset(dAllExams, dAllExams$examNum==1)$numResUsed, na.rm=T), digits=3)`, 
+    - usage at examNum 2: M=`r format(mean(subset(dAllExams, dAllExams$examNum==2)$numResUsed, na.rm=T), digits=3)`, SD=`r format(sd(subset(dAllExams, dAllExams$examNum==2)$numResUsed, na.rm=T), digits=3)`, 
+    - usage at examNum 3: M=`r format(mean(subset(dAllExams, dAllExams$examNum==3)$numResUsed, na.rm=T), digits=3)`, SD=`r format(sd(subset(dAllExams, dAllExams$examNum==3)$numResUsed, na.rm=T), digits=3)`, 
+    - `r reportStatisticsInText_lmer(lmer_resourceUseOverTime$coeff, "examNum")`; 
+
+- Mean usefulness across all 4 years
+    - usefulness at examNum 1: M=`r format(mean(subset(dAllExams, dAllExams$examNum==1)$meanUsefulness, na.rm=T), digits=3)`, SD=`r format(sd(subset(dAllExams, dAllExams$examNum==1)$meanUsefulness, na.rm=T), digits=3)`, 
+    - usefulness at examNum 2: M=`r format(mean(subset(dAllExams, dAllExams$examNum==2)$meanUsefulness, na.rm=T), digits=3)`, SD=`r format(sd(subset(dAllExams, dAllExams$examNum==2)$meanUsefulness, na.rm=T), digits=3)`, 
+    - usefulness at examNum 3: M=`r format(mean(subset(dAllExams, dAllExams$examNum==3)$meanUsefulness, na.rm=T), digits=3)`, SD=`r format(sd(subset(dAllExams, dAllExams$examNum==3)$meanUsefulness, na.rm=T), digits=3)`, 
+    - `r reportStatisticsInText_lmer(lmer_meanUsefulnessOverTime$coeff, "examNum")`; 
+
+
+
+## Predicting Exam Performance
+
+
+Ultimately, we were interested in whether students' resource management behaviors between exams were associated with their exam performance. In a mixed-effects linear model, we regressed students’ current exam performance on their reported exploration, exploitation, and pruning behaviors, controlling for students’ performance on the prior exam as fixed effects. We added random intercepts by student nested within year, and time-point nested within year. Exam scores, the dependent variable, were converted into percentage scores out of 100 for all exams. Effect sizes (unstandardized b coefficients) can be interpreted in units of percentage points. Means and standard deviations of the three class exam scores are presented in Table S3. Thus, for student $i$ at time $t$ in year $y$, we estimate the following model:
+
+$\text{Exam}_{i,t,y} = b_0 + b_1 \text{NumExplore}_{i,t,y} + b_2 \text{NumExploit}_{i,t,y} + b_3 \text{NumPrune}_{i,t,y} + b_4 \text{Exam}_{i,t-1,y} + u_{i,y} + u_{t,y} + u_y + \epsilon_{i,t,y}$
+
+
+Where $\text{Exam}_{i,t,y}$ denotes the exam score of student $i$ at time $t$ in year $y$, $u_{i,y}$ gives the random intercept of student nested within year, $u_{t,y}$ gives the random intercept of exam nested within year, and $u_y$ gives the random intercept by year. Note that controlling for the exam performance at the previous time-point is conservative, and allows us to test if the resource regulatory behaviors (done between exams) explain exam performance over and above prior performance. In R syntax, this model is: 
+
+`lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year))`
+
+
+```{r exam-performance-on-explore-exploit-prune, warning=FALSE, message=FALSE, echo=FALSE, eval=TRUE}
+lmer_currentPerfByExploreExploitPruneControllingForPastPerf = summary(lmerTest::lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))
+
+lmer_plot_df = data.frame(
+  Estimate = lmer_currentPerfByExploreExploitPruneControllingForPastPerf$coeff[-c(1,5),1],
+  StdErr = lmer_currentPerfByExploreExploitPruneControllingForPastPerf$coeff[-c(1,5),2],
+  Variable = factor(c("Explore", "Exploit", "Prune"),
+                    levels=c("Explore", "Exploit", "Prune")
+                    #levels=c("Prune", "Exploit", "Explore")
+                    )
+)
+
+
+ggplot(lmer_plot_df, aes(x=Variable, y=Estimate)) + 
+  geom_point(aes(x=Variable, y=Estimate), size=3) + 
+  geom_errorbar(aes(ymin=Estimate - 1.96*StdErr, ymax=Estimate + 1.96*StdErr, x=Variable), width=.1) + 
+  #geom_vline(xintercept=0, lty=2) + 
+  #scale_y_reverse() + 
+  xlab("Regulatory Behavior") + ylab("Effect Size") + 
+  theme_bw() + 
+  theme(legend.position="top",
+        strip.background = element_rect(fill="#FFFFFF", color=NA), 
+        strip.text = element_text(size=12), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size=14, vjust=-0.2),
+        axis.title.y = element_text(size=14, vjust=0.8),
+        legend.text = element_text(size=12),
+        title = element_text(size=18, vjust=1),
+        panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line())
+
+
+# library(MuMIn) # for getting R^2 values using r.squaredGLMM(), after https://ecologyforacrowdedplanet.wordpress.com/2013/08/27/r-squared-in-mixed-models-the-easy-way/ and following Nakagawa and Schielzeth (2013) and Johnson (2014)
+#MuMIn::r.squaredGLMM(lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))["R2c"]
+
+
+```
+
+(Note the above figure is not in the paper as the information already appears in Table 3)
+
+#### Results: Predicting Exam Performance
+
+We analyzed the effect of exploring, exploiting, and pruning behaviors on exam performance (Equation 3). Consistent with our hypotheses, the extent to which students engaged in each of these resource management behaviors positively predicted their exam performance. This was true for exploration (b = 0.85, [0.52, 1.18], p < .001), for exploitation (b = 0.91, [0.74, 1.08], p < .001), and for pruning (b = 0.75, [0.03, 1.48], p = .042). Table 3 presents the full statistical results. Following recent recommendations in psychological science and statistics to move away from Null Hypothesis Statistical Testing (e.g., Wasserstein, Schirm, & Lazar, 2019) and towards an "estimation" framework (e.g., Cumming, 2014), we provide p values for completeness, but we focus on interpreting the effect sizes, which are directly interpretable in terms of exam performance. Exploring one new resource was associated with an average of 0.85 percentage points increase in students’ performance on the current exam; exploiting one additional resource that was considered useful on the previous exam was associated with an average of 0.91 percentage points increase in students’ performance on the current exam; and pruning one additional resource that was found to be useless on the previous exam was associated with an average of 0.75 percentage points increase in students’ performance on the current exam.
+
+Figure 2 visually illustrates how empirically-observed combinations of exploration, exploitation, and pruning related to changes in students’ exam performance. We observed that greater resource management was associated with larger changes in students’ performance on subsequent exams: Starting from the origin and moving out along each of the three axes, as learners report practicing more exploration, exploitation, and pruning, we see that their exam performance improves. Our findings underscore the adaptive, strategic nature of learners’ decisions to explore new resources, exploit previously useful resources, and prune previously useless resources between one exam to the next.
+
+
+
+#### Table 3
+
+- Explore: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf$coeff, "sum_explore")`; 
+- Exploit: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf$coeff, "sum_exploit")`; 
+- Prune: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf$coeff, "sum_prune")`; 
+- pastScorePercent: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf$coeff, "pastScorePercent")`; 
+- Conditional R^2 after Nakagawa & Schielzeth (2013): `r MuMIn::r.squaredGLMM(lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))[2]`
+
+
+
+### Robustness Check 1: Controlling for initial sum of resources used, as a proxy for engagement
+
+In addition, we replicated our results when controlling for student engagement with the course resources (i.e., the total number of resources they used). Controlling for the number of resources students reported using at the beginning of the course (before Exam 1) as a proxy of their course engagement, as well as prior performance (i.e., adding total number of resources initially used as additional covariate to Equation 3), we find that greater exploration (b = 0.93 [0.59, 1.28], p<.001), exploitation (b = 0.85 [0.65, 1.05], p<.001), and pruning (b = 0.68 [-0.06, 1.43], p = .072) between exams still predicted students’ subsequent exam performance. The effect sizes in this analysis were relatively similar in magnitude, although we note that the coefficient on pruning is no longer statistically significant at the .05 level, suggesting that strategic resource management behaviors of exploring, exploiting, and pruning offer predictive value above and beyond a proxy of students’ sheer use of more course resources.
+
+
+
+```{r robustness-1, warning=FALSE, message=FALSE, echo=FALSE, eval=TRUE}
+dCombinedExams$exam1_sumres = rep(subset(dCombinedExams, dCombinedExams$examNum==2)$past_sumres, 2)
+
+lmer_currentPerfByExploreExploitPruneControllingForPastPerfAndInitialSumRes = summary(lmerTest::lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + exam1_sumres + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))
+
+```
+
+
+`lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + exam1_sumres + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year))`
+
+<i>(i.e., we added their sum of resources used on exam 1 as an additional covariate)</i>
+
+- Explore: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerfAndInitialSumRes$coeff, "sum_explore")`; 
+- Exploit: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerfAndInitialSumRes$coeff, "sum_exploit")`; 
+- Prune: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerfAndInitialSumRes$coeff, "sum_prune")`; 
+- pastScorePercent: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerfAndInitialSumRes$coeff, "pastScorePercent")`; 
+- exam1_sumres: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerfAndInitialSumRes$coeff, "exam1_sumres")`; 
+- Conditional R^2 after Nakagawa & Schielzeth (2013): `r MuMIn::r.squaredGLMM(lmer(currentScorePercent ~ sum_explore + sum_exploit + sum_prune + exam1_sumres + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))[2]`
+
+
+
+### Robustness check 2: Analyses using strict explore
+
+Finally, our definition of exploration only required that students not use a resource on the preceding exam, but did not consider if they have not used it on all previous exams. We repeated all our analyses using a stricter definition of exploration that is trying a resource that students had not used on any previous exam, rather than just the preceding exam. Our results replicated, and the effect size on explore was in fact, stronger (b = 1.18 [0.78, 1.57], p<.001). However, we choose to retain our current (conservative) operationalization, using only the previous exam's (non-)use, to be consistent with how we operationalized exploiting and pruning. We note that exploitation and pruning are theoretically well-defined even using only the previous exam.
+
+
+```{r exam-performance-on-explore-exploit-prune-STRICT, warning=FALSE, message=FALSE, echo=FALSE, eval=TRUE}
+lmer_currentPerfByExploreExploitPruneControllingForPastPerf_STRICT = summary(lmerTest::lmer(currentScorePercent ~ sum_explore_STRICT + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))
+
+```
+
+`lmer(currentScorePercent ~ sum_explore_STRICT + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year))`
+
+
+- Explore: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf_STRICT$coeff, "sum_explore_STRICT")`; 
+- Exploit: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf_STRICT$coeff, "sum_exploit")`; 
+- Prune: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf_STRICT$coeff, "sum_prune")`; 
+- pastScorePercent: `r reportStatisticsInText_lmer(lmer_currentPerfByExploreExploitPruneControllingForPastPerf_STRICT$coeff, "pastScorePercent")`; 
+- Conditional R^2 after Nakagawa & Schielzeth (2013): 
+    - `r MuMIn::r.squaredGLMM(lmer(currentScorePercent ~ sum_explore_STRICT + sum_exploit + sum_prune + pastScorePercent + (1|ID:Year) + (1|examNum:Year) + (1|Year), dCombinedExams, na.action=na.exclude))[2]`
+
+
+
+
+
+
+
+
+
+
+# Figures
+
+
+### Figure 1: Resource Use Figure
+
+```{r making-resource-use-figure-table, echo=FALSE, results="as.is", fig.height=7, fig.width=12, eval=TRUE}
+
+# all years combined
+resourceUseTableDF = data.frame(
+  #Year = c(rep(1,each=6)),
+  Exam = rep(c(1,2,3),each=6*12), # 6 values x 12 resources
+  ResourceID = rep(rep(c(1:12),each=6),3), # 6 values x 3 exams
+  Value = rep(c(0,1,2,3,4,5),3*12), # 3 exams * 12 resources
+  Proportion = c(c(table(d$E1_r1_lec_max) /sum(table(d$E1_r1_lec_max)),
+                   table(d$E1_r2_dis) /sum(table(d$E1_r2_dis)),
+                   table(d$E1_r3_gsirec) /sum(table(d$E1_r3_gsirec)),
+                   table(d$E1_r4_slc) /sum(table(d$E1_r4_slc)),
+                   table(d$E1_r5_lab) /sum(table(d$E1_r5_lab)),
+                   table(d$E1_r6_slcgrp) /sum(table(d$E1_r6_slcgrp)),
+                   table(d$E1_r7_peergrp) /sum(table(d$E1_r7_peergrp)),
+                   table(d$E1_r8_self) /sum(table(d$E1_r8_self)),
+                   table(d$E1_r9_textbk) /sum(table(d$E1_r9_textbk)),
+                   table(d$E1_r10_txtbkprob) /sum(table(d$E1_r10_txtbkprob)),
+                   table(d$E1_r11_coursepack) /sum(table(d$E1_r11_coursepack)),
+                   table(d$E1_r12_podcasts_max) /sum(table(d$E1_r12_podcasts_max))),
+                 c(table(d$E2_r1_lec_max) /sum(table(d$E2_r1_lec_max)),
+                   table(d$E2_r2_dis) /sum(table(d$E2_r2_dis)),
+                   table(d$E2_r3_gsirec) /sum(table(d$E2_r3_gsirec)),
+                   table(d$E2_r4_slc) /sum(table(d$E2_r4_slc)),
+                   table(d$E2_r5_lab) /sum(table(d$E2_r5_lab)),
+                   table(d$E2_r6_slcgrp) /sum(table(d$E2_r6_slcgrp)),
+                   table(d$E2_r7_peergrp) /sum(table(d$E2_r7_peergrp)),
+                   table(d$E2_r8_self) /sum(table(d$E2_r8_self)),
+                   table(d$E2_r9_textbk) /sum(table(d$E2_r9_textbk)),
+                   table(d$E2_r10_txtbkprob) /sum(table(d$E2_r10_txtbkprob)),
+                   table(d$E2_r11_coursepack) /sum(table(d$E2_r11_coursepack)),
+                   table(d$E2_r12_podcasts_max) /sum(table(d$E2_r12_podcasts_max))),
+                 c(table(d$E3_r1_lec_max) /sum(table(d$E3_r1_lec_max)),
+                   table(d$E3_r2_dis) /sum(table(d$E3_r2_dis)),
+                   table(d$E3_r3_gsirec) /sum(table(d$E3_r3_gsirec)),
+                   table(d$E3_r4_slc) /sum(table(d$E3_r4_slc)),
+                   table(d$E3_r5_lab) /sum(table(d$E3_r5_lab)),
+                   table(d$E3_r6_slcgrp) /sum(table(d$E3_r6_slcgrp)),
+                   table(d$E3_r7_peergrp) /sum(table(d$E3_r7_peergrp)),
+                   table(d$E3_r8_self) /sum(table(d$E3_r8_self)),
+                   table(d$E3_r9_textbk) /sum(table(d$E3_r9_textbk)),
+                   table(d$E3_r10_txtbkprob) /sum(table(d$E3_r10_txtbkprob)),
+                   table(d$E3_r11_coursepack) /sum(table(d$E3_r11_coursepack)),
+                   table(d$E3_r12_podcasts_max) /sum(table(d$E3_r12_podcasts_max))))
+)
+
+resourceUseTableDF$Percentage = resourceUseTableDF$Proportion * 100
+resourceUseTableDF$Rating = factor(resourceUseTableDF$Value, levels=c(5,4,3,2,1,0),
+                                   labels=c("Extremely Useful",
+                                            "Useful", 
+                                            "Neutral", 
+                                            "Useless",
+                                            "Extremely Useless", 
+                                            "Did not use"))
+
+# reorder resourceUse by Rating since 
+resourceUseTableDF = resourceUseTableDF[order(resourceUseTableDF$Value, decreasing = T),]
+
+resourceUseTableDF$ExamRev = 
+  factor(resourceUseTableDF$Exam, levels=c(3,2,1),
+         labels=c("Exam 3", "Exam 2", "Exam 1"))
+resourceUseTableDF$ResourceName = 
+  factor(resourceUseTableDF$ResourceID, levels=c(1:12),
+         labels=c("Lecture", "Discussion", "GSI Recitation",
+                  "SLC", "Lab", "SLC Group", "Peer Group", "Self", 
+                  "Textbook", "Textbook Problems", "Coursepack", "Podcasts"))
+
+COLOR_SCHEME = c("Did not use" = "#EEEEEE", 
+                 "Extremely Useless" = "#DD2200",
+                 "Useless" = "#FF0022", 
+                 "Neutral" = "#CC00CC", 
+                 "Useful" = "#2200FF", 
+                 "Extremely Useful" = "#0000CC")
+
+ggplot(resourceUseTableDF, aes(x=ExamRev, fill=Rating, y=Percentage)) + geom_bar(stat="identity") + 
+  scale_y_continuous(limits=c(0,100.5)) + coord_flip() +
+  ylab("Percentage of students in the study") +
+  facet_grid(ResourceName~., switch="y") + theme_bw() + #scale_fill_brewer(type="seq", palette=1, direction=-1) +
+  scale_fill_manual(values=COLOR_SCHEME) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_text(size=8),
+        axis.ticks.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect(colour="white", fill="white"),
+        strip.text.y = element_text(angle=180),
+        panel.border = element_blank())
+
+
+```
+
+
+
+### Figure 2: Graphical Representation of the Frequency of Exploring, Exploiting and Pruning in Relation to Changes in Performance
+
+
+```{r 3d-plot, echo=FALSE, warning=FALSE, message=FALSE, eval=TRUE}
+#library(plotly)
+dCombinedExams$scoreDifference = dCombinedExams$currentScorePercent - dCombinedExams$pastScorePercent
+dCombinedExams$scoreDifference_z = (dCombinedExams$scoreDifference - mean(dCombinedExams$scoreDifference, na.rm=T))/(sd(dCombinedExams$scoreDifference, na.rm=T))
+
+# Plotting the summary
+
+dCombinedExamsSummary = summarySE(dCombinedExams, groupvars=c("sum_explore", "sum_exploit", "sum_prune"),
+                                  measurevar = "scoreDifference", na.rm=T)
+dCombinedExamsSummary = subset(dCombinedExamsSummary, !is.na(dCombinedExamsSummary$sum_explore))
+# dCombinedExamsSummary = subset(dCombinedExamsSummary, dCombinedExamsSummary$N>5)
+
+# sum(table(dCombinedExamsSummary$N))  ## -- 160 responses, split into 5 bins
+# bin 1: [1]   has 48 responses
+# bin 2: [2,5] has 35 responses
+# bin 3: [6,15] has 30 responses
+# bin 4: [16,98] has 29 responses
+# bin 5: [>100] has 17 responses
+dCombinedExamsSummary$N_bins = #(dCombinedExamsSummary$N==1) * 1 +
+  (dCombinedExamsSummary$N>=2 & dCombinedExamsSummary$N<=5) * 2 +
+  (dCombinedExamsSummary$N>=6 & dCombinedExamsSummary$N<=15) * 3 + 
+  (dCombinedExamsSummary$N>=16 & dCombinedExamsSummary$N<=99) * 4 + 
+  (dCombinedExamsSummary$N>100) * 5
+dCombinedExamsSummary$N_bins_scaled = dCombinedExamsSummary$N_bins*5 + 1
+
+
+# Change to log_10 scale, easier to explain. Also, we ignore combinations with N==1
+# dCombinedExamsSummary$N_bins = log(dCombinedExamsSummary$N, base=10)
+# dCombinedExamsSummary$N_bins_scaled = dCombinedExamsSummary$N_bins*15 + 10
+dCombinedExamsSummary$N_bins_scaled = log(dCombinedExamsSummary$N, base=10)*10 + 10
+
+
+p1 <- plot_ly(subset(dCombinedExamsSummary, dCombinedExamsSummary$N>1), 
+              x = ~sum_explore, y = ~sum_exploit, z = ~sum_prune,
+              marker = list(color = ~scoreDifference, 
+                            #colorscale = c('#FFE1A1', '#683531'), 
+                            fillcolor = ~scoreDifference,
+                            cmin = -40, cmax = 30,
+                            opacity = 1,
+                            line = list(width=0),
+                            colorbar = list(title="Change in <br>percentage points"),
+                            #colorscale = c('Viridis'), 
+                            showscale = TRUE, reversescale=T,
+                            size = ~N_bins_scaled),
+              hoverinfo = 'text',
+              text = ~paste('Number of Students:', N,
+                            '<br> Number of Resources Explored: ', sum_explore,
+                            '<br> Number of Resources Exploited: ', sum_exploit,
+                            '<br> Number of Resources Pruned: ', sum_prune,
+                            '<br> Average Change in Exam Performance (% points): ', round(scoreDifference, digits=1) )) %>%
+  add_markers() %>%
+  layout(scene = list(xaxis = list(title = 'Explore', tickvals=c(0:7), range = c(0,7)),
+                      yaxis = list(title = 'Exploit', tickvals=c(0:11), range = c(0,11)),
+                      zaxis = list(title = 'Prune', tickvals=c(0:3), range = c(0,3)),
+                      camera = list(eye = list(x = 1.9, y = -1.5, z = 0.6),
+                                    camera = list(x = 0, y = 1, z = 0),
+                                    up = list(x = sin(35/360*2*pi), y = sin(40/360*2*pi), z = cos(40/360*2*pi) ))))
+
+p1
+
+
+```
+
+
+
+
+# Supplemental Figures and Tables
+
+### Table S1: Demographics of Students Who Participated in At Least One of Our Surveys Across the 4 Cohorts.
+
+```{r making-demographic-table-2, echo=FALSE, results="as.is", eval=TRUE}
+demographicTableDF = data.frame(
+  Demographics = c("Gender: Male",
+                   "Gender: Female",
+                   "Gender: Not Reported",
+                   "Race: Asian",
+                   "Race: Black",
+                   "Race: Hispanic",
+                   "Race: Native American",
+                   "Race: White",
+                   "Race: Not Reported"),
+  Year1 = c(return_demographic(d, year=1, "Sex", "M"),
+            return_demographic(d, year=1, "Sex", "F"),
+            return_demographic(d, year=1, "Sex", NA),
+            return_demographic(d, year=1, "Ethnic.Group.Descrshort", "Asian"),
+            return_demographic(d, year=1, "Ethnic.Group.Descrshort", "Black"),
+            return_demographic(d, year=1, "Ethnic.Group.Descrshort", "Hispanic"),
+            return_demographic(d, year=1, "Ethnic.Group.Descrshort", "Native Amr"),
+            return_demographic(d, year=1, "Ethnic.Group.Descrshort", "White"),
+            return_demographic(d, year=1, "Ethnic.Group.Descrshort", "None") + 
+              return_demographic(d, year=1, "Ethnic.Group.Descrshort", "Not Incl") +
+              return_demographic(d, year=1, "Ethnic.Group.Descrshort", NA)),
+  Year2 = c(return_demographic(d, year=2, "Sex", "M"),
+            return_demographic(d, year=2, "Sex", "F"),
+            return_demographic(d, year=2, "Sex", NA),
+            return_demographic(d, year=2, "Ethnic.Group.Descrshort", "Asian"),
+            return_demographic(d, year=2, "Ethnic.Group.Descrshort", "Black"),
+            return_demographic(d, year=2, "Ethnic.Group.Descrshort", "Hispanic"),
+            return_demographic(d, year=2, "Ethnic.Group.Descrshort", "Native Amr"),
+            return_demographic(d, year=2, "Ethnic.Group.Descrshort", "White"),
+            return_demographic(d, year=2, "Ethnic.Group.Descrshort", "None") + 
+              return_demographic(d, year=2, "Ethnic.Group.Descrshort", "Not Incl") +
+              return_demographic(d, year=2, "Ethnic.Group.Descrshort", NA)),
+  Year3 = c(return_demographic(d, year=3, "Sex", "M"),
+            return_demographic(d, year=3, "Sex", "F"),
+            return_demographic(d, year=3, "Sex", NA),
+            return_demographic(d, year=3, "Ethnic.Group.Descrshort", "Asian"),
+            return_demographic(d, year=3, "Ethnic.Group.Descrshort", "Black"),
+            return_demographic(d, year=3, "Ethnic.Group.Descrshort", "Hispanic"),
+            return_demographic(d, year=3, "Ethnic.Group.Descrshort", "Native Amr"),
+            return_demographic(d, year=3, "Ethnic.Group.Descrshort", "White"),
+            return_demographic(d, year=3, "Ethnic.Group.Descrshort", "None") + 
+              return_demographic(d, year=3, "Ethnic.Group.Descrshort", "Not Incl") + 
+              return_demographic(d, year=3, "Ethnic.Group.Descrshort", NA)),
+  Year4 = c(return_demographic(d, year=4, "Sex", "M"),
+            return_demographic(d, year=4, "Sex", "F"),
+            return_demographic(d, year=4, "Sex", NA),
+            return_demographic(d, year=4, "Ethnic.Group.Descrshort", "Asian"),
+            return_demographic(d, year=4, "Ethnic.Group.Descrshort", "Black"),
+            return_demographic(d, year=4, "Ethnic.Group.Descrshort", "Hispanic"),
+            return_demographic(d, year=4, "Ethnic.Group.Descrshort", "Native Amr"),
+            return_demographic(d, year=4, "Ethnic.Group.Descrshort", "White"),
+            return_demographic(d, year=4, "Ethnic.Group.Descrshort", "None") + 
+              return_demographic(d, year=4, "Ethnic.Group.Descrshort", "Not Incl") +
+              return_demographic(d, year=4, "Ethnic.Group.Descrshort", NA)
+  ))
+row.names(demographicTableDF)[c(1:3, 9)] <- c("Male", "Female", "Gender: Not Reported", "Race: Not Reported")
+pander(demographicTableDF[,2:5], split.table=80)
+
+```
+
+ 
+
+
+
+
+### Table S2: Breakdown of resource usefulness ratings, comparing past usefulness and current usefulness. These numbers are collapsed across all 4 cohorts and each of the two (past/current) time-points in class. 
+
+
+```{r calculate-probabilities, echo=FALSE, result="as.is", fig.height=6, fig.width=9, eval=TRUE}
+## 1) Probabilities of Exploring, Exploiting, and Pruning
+
+# # want to calculate P(use on subsequent exam | usefulness on present exam)
+# 
+dProb = data.frame(
+  Year = rep(d$Year, 2*12),
+  ID = rep(d$ID, 2*12),
+  examNum = rep(c(2,3), each=nrow(d)*12),
+  resourceName = rep(rep(c("r1_lec_max", "r2_dis", "r3_gsirec", "r4_slc", "r5_lab",
+                           "r6_slcgrp", "r7_peergrp", "r8_self", "r9_textbk",
+                           "r10_txtbkprob", "r11_coursepack", "r12_podcasts_max"), each=nrow(d)), 2),
+  currentUsefulness = c(d$E2_r1_lec_max, d$E2_r2_dis, d$E2_r3_gsirec,
+                        d$E2_r4_slc, d$E2_r5_lab, d$E2_r6_slcgrp,
+                        d$E2_r7_peergrp, d$E2_r8_self, d$E2_r9_textbk,
+                        d$E2_r10_txtbkprob, d$E2_r11_coursepack, d$E2_r12_podcasts_max,
+                        d$E3_r1_lec_max, d$E3_r2_dis, d$E3_r3_gsirec,
+                        d$E3_r4_slc, d$E3_r5_lab, d$E3_r6_slcgrp,
+                        d$E3_r7_peergrp, d$E3_r8_self, d$E3_r9_textbk,
+                        d$E3_r10_txtbkprob, d$E3_r11_coursepack, d$E3_r12_podcasts_max),
+  pastUsefulness = c(d$E1_r1_lec_max, d$E1_r2_dis, d$E1_r3_gsirec,
+                     d$E1_r4_slc, d$E1_r5_lab, d$E1_r6_slcgrp,
+                     d$E1_r7_peergrp, d$E1_r8_self, d$E1_r9_textbk,
+                     d$E1_r10_txtbkprob, d$E1_r11_coursepack, d$E1_r12_podcasts_max,
+                     d$E2_r1_lec_max, d$E2_r2_dis, d$E2_r3_gsirec,
+                     d$E2_r4_slc, d$E2_r5_lab, d$E2_r6_slcgrp,
+                     d$E2_r7_peergrp, d$E2_r8_self, d$E2_r9_textbk,
+                     d$E2_r10_txtbkprob, d$E2_r11_coursepack, d$E2_r12_podcasts_max)
+)
+
+
+dProb$currentUsed = dProb$currentUsefulness > 0
+
+dConditionalProb = data.frame(name = c("Past: Usefulness 5",
+                                       "Past: Usefulness 4", 
+                                       "Past: Usefulness 3", 
+                                       "Past: Usefulness 2",
+                                       "Past: Usefulness 1",
+                                       "Past: Didn't use", 
+                                       "Past: All"),
+  current5 = c(sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==5, na.rm=T),
+               sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==4, na.rm=T),
+               sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==3, na.rm=T),
+               sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==2, na.rm=T),
+               sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==1, na.rm=T),
+               sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==0, na.rm=T),
+               sum(dProb$currentUsefulness==5 & dProb$pastUsefulness<6, na.rm=T)),
+  current4 = c(sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==5, na.rm=T),
+               sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==4, na.rm=T),
+               sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==3, na.rm=T),
+               sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==2, na.rm=T),
+               sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==1, na.rm=T),
+               sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==0, na.rm=T),
+               sum(dProb$currentUsefulness==4 & dProb$pastUsefulness<6, na.rm=T)),
+  current3 = c(sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==5, na.rm=T),
+               sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==4, na.rm=T),
+               sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==3, na.rm=T),
+               sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==2, na.rm=T),
+               sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==1, na.rm=T),
+               sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==0, na.rm=T),
+               sum(dProb$currentUsefulness==3 & dProb$pastUsefulness<6, na.rm=T)),
+  current2 = c(sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==5, na.rm=T),
+               sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==4, na.rm=T),
+               sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==3, na.rm=T),
+               sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==2, na.rm=T),
+               sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==1, na.rm=T),
+               sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==0, na.rm=T),
+               sum(dProb$currentUsefulness==2 & dProb$pastUsefulness<6, na.rm=T)),
+  current1 = c(sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==5, na.rm=T),
+               sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==4, na.rm=T),
+               sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==3, na.rm=T),
+               sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==2, na.rm=T),
+               sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==1, na.rm=T),
+               sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==0, na.rm=T),
+               sum(dProb$currentUsefulness==1 & dProb$pastUsefulness<6, na.rm=T)),
+  current0 = c(sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==5, na.rm=T),
+               sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==4, na.rm=T),
+               sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==3, na.rm=T),
+               sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==2, na.rm=T),
+               sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==1, na.rm=T),
+               sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==0, na.rm=T),
+               sum(dProb$currentUsefulness==0 & dProb$pastUsefulness<6, na.rm=T)),
+  currentAll = c(sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==5, na.rm=T),
+                 sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==4, na.rm=T),
+                 sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==3, na.rm=T),
+                 sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==2, na.rm=T),
+                 sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==1, na.rm=T),
+                 sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==0, na.rm=T),
+                 sum(dProb$currentUsefulness<6 & dProb$pastUsefulness<6, na.rm=T))
+)
+
+      dConditionalProbSimplified = data.frame(name = c("Past: Usefulness 4+5", 
+                                                       "Past: Usefulness 3",
+                                                       "Past: Usefulness 1+2",
+                                                       "Past: Didn't use", 
+                                                       "Past: All"),
+        current45 = rowSums(cbind(c(sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==5, na.rm=T) +
+                                    sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==4, na.rm=T),
+                                    sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==3, na.rm=T),
+                                    sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==2, na.rm=T) +
+                                    sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==1, na.rm=T),
+                                    sum(dProb$currentUsefulness==5 & dProb$pastUsefulness==0, na.rm=T),
+                                    sum(dProb$currentUsefulness==5 & dProb$pastUsefulness<6, na.rm=T)), 
+                                  c(sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==5, na.rm=T) +
+                                    sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==4, na.rm=T),
+                                    sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==3, na.rm=T),
+                                    sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==2, na.rm=T) +
+                                    sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==1, na.rm=T),
+                                    sum(dProb$currentUsefulness==4 & dProb$pastUsefulness==0, na.rm=T),
+                                    sum(dProb$currentUsefulness==4 & dProb$pastUsefulness<6, na.rm=T)))),
+        current3 = c(sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==5, na.rm=T) +
+                     sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==4, na.rm=T),
+                     sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==3, na.rm=T),
+                     sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==2, na.rm=T) +
+                     sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==1, na.rm=T),
+                     sum(dProb$currentUsefulness==3 & dProb$pastUsefulness==0, na.rm=T),
+                     sum(dProb$currentUsefulness==3 & dProb$pastUsefulness<6, na.rm=T)),
+        current12 = rowSums(cbind(c(sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==5, na.rm=T) +
+                                    sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==4, na.rm=T),
+                                    sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==3, na.rm=T),
+                                    sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==2, na.rm=T) +
+                                    sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==1, na.rm=T),
+                                    sum(dProb$currentUsefulness==2 & dProb$pastUsefulness==0, na.rm=T),
+                                    sum(dProb$currentUsefulness==2 & dProb$pastUsefulness<6, na.rm=T)),
+                                  c(sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==5, na.rm=T) +
+                                    sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==4, na.rm=T),
+                                    sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==3, na.rm=T),
+                                    sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==2, na.rm=T) +
+                                    sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==1, na.rm=T),
+                                    sum(dProb$currentUsefulness==1 & dProb$pastUsefulness==0, na.rm=T),
+                                    sum(dProb$currentUsefulness==1 & dProb$pastUsefulness<6, na.rm=T)))),
+        current0 = c(sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==5, na.rm=T) +
+                     sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==4, na.rm=T),
+                     sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==3, na.rm=T),
+                     sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==2, na.rm=T) +
+                     sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==1, na.rm=T),
+                     sum(dProb$currentUsefulness==0 & dProb$pastUsefulness==0, na.rm=T),
+                     sum(dProb$currentUsefulness==0 & dProb$pastUsefulness<6, na.rm=T)),
+        currentAll = c(sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==5, na.rm=T) +
+                       sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==4, na.rm=T),
+                       sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==3, na.rm=T),
+                       sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==2, na.rm=T) +
+                       sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==1, na.rm=T),
+                       sum(dProb$currentUsefulness<6 & dProb$pastUsefulness==0, na.rm=T),
+                       sum(dProb$currentUsefulness<6 & dProb$pastUsefulness<6, na.rm=T))
+      )
+
+#dConditionalProbNormalized = dConditionalProb
+#dConditionalProbNormalized[,2:8] = dConditionalProbNormalized[,2:8] / dConditionalProbNormalized[,8] * 100
+#dConditionalProbSimplifiedNormalized = dConditionalProbSimplified
+#dConditionalProbSimplifiedNormalized[,2:6] = dConditionalProbSimplifiedNormalized[,2:6] / dConditionalProbSimplifiedNormalized[,6] * 100
+
+
+pander(dConditionalProb, digits=3, split.table = 120)
+
+#pander(dConditionalProbNormalized, digits=3, split.table = 120)
+#pander(dConditionalProbSimplifiedNormalized, digits=3, split.table = 80)
+```
+
+
+
+### Table 2: Descriptive frequencies of resource use on the prior exam (Exams 1 and 2) and the percentages of those resources explored, exploited, and pruned out of those possible on the subsequent Exams 2 and 3, respectively, collapsing across cohorts.
+
+Note. The numbers of resources reflect the mean numbers per student, averaged across all students per exam.
+
+```{r recalculating-descriptive-statistics-by-individuals, echo=FALSE, eval=TRUE, results='as.is'}
+# Aggregate by individual first to calculate table.
+
+## ????
+# the variables in dProb ("notUsedOnPriorExam", "ratedUsefulOnPriorExam", "ratedUselessOnPriorExam") need to be recalculated to be only pw deleted.
+# dProb$notUsedOnPriorExam_pw = dProb$pastUsefulness==0
+# dProb$notUsedOnPriorExam_pw = dProb$pastUsefulness==0
+# dProb$notUsedOnPriorExam_pw = dProb$pastUsefulness==0
+## ???
+
+
+# like above chunk, need to force listwise NAs
+# dProb$explored[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+
+
+dProb$notUsedOnPriorExam = dProb$pastUsefulness==0
+dProb$notUsedOnPriorExam[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+dProb$explored = dProb$currentUsefulness>0 & dProb$pastUsefulness==0
+dProb$explored[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+
+dProb$ratedUsefulOnPriorExam = dProb$pastUsefulness>3
+dProb$ratedUsefulOnPriorExam[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+dProb$exploited = dProb$currentUsefulness>0 & dProb$pastUsefulness>3
+dProb$exploited[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+
+dProb$ratedUselessOnPriorExam = dProb$pastUsefulness<3 & dProb$pastUsefulness>0
+dProb$ratedUselessOnPriorExam[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+dProb$pruned = dProb$currentUsefulness==0 & dProb$pastUsefulness<3 & dProb$pastUsefulness>0
+dProb$pruned[is.na(dProb$pastUsefulness) | is.na(dProb$currentUsefulness)] <- NA
+
+
+dByIndividual = aggregate(dProb$notUsedOnPriorExam, by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)
+colnames(dByIndividual)[3] = "notUsedOnPriorExam"
+dByIndividual$notUsedOnPriorExam_numNAs = aggregate(is.na(dProb$notUsedOnPriorExam), by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$notUsedOnPriorExam[dByIndividual$notUsedOnPriorExam_numNAs>0] <- NA
+
+dByIndividual$explored = aggregate(dProb$explored, by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$explored_numNAs = aggregate(is.na(dProb$explored), by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$explored[dByIndividual$explored_numNAs>0] <- NA
+
+dByIndividual$ratedUsefulOnPriorExam = aggregate(dProb$ratedUsefulOnPriorExam, by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$ratedUsefulOnPriorExam_numNAs = aggregate(is.na(dProb$ratedUsefulOnPriorExam), by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$ratedUsefulOnPriorExam[dByIndividual$ratedUsefulOnPriorExam_numNAs>0] <- NA
+
+dByIndividual$exploited = aggregate(dProb$exploited, by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$exploited_numNAs = aggregate(is.na(dProb$exploited), by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$exploited[dByIndividual$exploited_numNAs>0] <- NA
+
+dByIndividual$ratedUselessOnPriorExam = aggregate(dProb$ratedUselessOnPriorExam, by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$ratedUselessOnPriorExam_numNAs = aggregate(is.na(dProb$ratedUselessOnPriorExam), by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$ratedUselessOnPriorExam[dByIndividual$ratedUselessOnPriorExam_numNAs>0] <- NA
+
+dByIndividual$pruned = aggregate(dProb$pruned, by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$pruned_numNAs = aggregate(is.na(dProb$pruned), by=dProb[,c("ID", "examNum")], FUN=sum, na.rm=T)$x
+dByIndividual$pruned[dByIndividual$pruned_numNAs>0] <- NA
+
+
+dByIndividual$proportionExplored = dByIndividual$explored / dByIndividual$notUsedOnPriorExam
+dByIndividual$proportionExploited = dByIndividual$exploited / dByIndividual$ratedUsefulOnPriorExam
+dByIndividual$proportionPruned = dByIndividual$pruned / dByIndividual$ratedUselessOnPriorExam
+
+dByExamNum = aggregate(dByIndividual[,
+        c("notUsedOnPriorExam", "explored", "proportionExplored",
+          "ratedUsefulOnPriorExam", "exploited", "proportionExploited",
+          "ratedUselessOnPriorExam", "pruned", "proportionPruned")], 
+        by=list(dByIndividual$examNum), FUN=mean, na.rm=T)
+dByExamNum_temp = aggregate(dByIndividual[,
+        c("notUsedOnPriorExam", "explored", "proportionExplored",
+          "ratedUsefulOnPriorExam", "exploited", "proportionExploited",
+          "ratedUselessOnPriorExam", "pruned", "proportionPruned")], 
+        by=list(dByIndividual$ID), FUN=mean, na.rm=T)
+
+dByExamNum = rbind(dByExamNum, aggregate(dByExamNum_temp[,
+        c("notUsedOnPriorExam", "explored", "proportionExplored",
+          "ratedUsefulOnPriorExam", "exploited", "proportionExploited",
+          "ratedUselessOnPriorExam", "pruned", "proportionPruned")], 
+        by=list(rep(4,nrow(dByExamNum_temp))), FUN=mean, na.rm=T))
+dByExamNum = t(dByExamNum)
+
+colnames(dByExamNum) = c("Exam2", "Exam3", "Both")
+dByExamNum = dByExamNum[-c(1),]
+rownames(dByExamNum) = c(
+  "Average number of resources that were not used on the prior exam",
+  "Of these, number explored on current exam",
+  "Percentage Explored",
+  "Average number of resources that were rated useful (>3) on prior exam",
+  "Of these, number exploited on current exam",
+  "Percentage Exploited",
+  "Average number of resources that were rated useless (<3) on prior exam",
+  "Of these, number pruned on current exam",
+  "Percentage Pruned")
+dByExamNum[c(3,6,9),] = dByExamNum[c(3,6,9),] * 100
+
+pander(dByExamNum, digits=3)
+```
+
+
+
+
+
+### Table S3: Means (and Standard Deviations) of Exams Scores
+
+```{r making-exam-descriptives-table, echo=FALSE, results="as.is", eval=TRUE}
+examPerfTable = data.frame(
+  Exam = c("Exam 1", "Exam 2", "Exam 3"),
+  Year1 = c(paste(format(mean(subset(d, d$Year==1)$E1percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==1)$E1percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==1)$E2percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==1)$E2percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==1)$E3percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==1)$E3percent, na.rm=T), digits=4),
+                  ")", sep="")),
+  Year2 = c(paste(format(mean(subset(d, d$Year==2)$E1percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==2)$E1percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==2)$E2percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==2)$E2percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==2)$E3percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==2)$E3percent, na.rm=T), digits=4),
+                  ")", sep="")),
+  Year3 = c(paste(format(mean(subset(d, d$Year==3)$E1percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==3)$E1percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==3)$E2percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==3)$E2percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==3)$E3percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==3)$E3percent, na.rm=T), digits=4),
+                  ")", sep="")),
+  Year4 = c(paste(format(mean(subset(d, d$Year==4)$E1percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==4)$E1percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==4)$E2percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==4)$E2percent, na.rm=T), digits=4),
+                  ")", sep=""),
+            paste(format(mean(subset(d, d$Year==4)$E3percent, na.rm=T), digits=4),
+                  " (", format(sd(subset(d, d$Year==4)$E3percent, na.rm=T), digits=4),
+                  ")", sep="")))
+pander(examPerfTable, split.table=80)
+
+```
+
+
+
+
+
+## Session Information
+```{r echo=F}
+sessionInfo()
+```
+
+
+
+
