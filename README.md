@@ -1,6 +1,6 @@
 # Explore, Exploit, and Prune in the Classroom: Strategic Resource Management Behaviors Predict Performance
 
-NOTE: We have a persistent repository at [OpenICPSR](https://www.openicpsr.org/openicpsr/project/127301/version/V1/view). 
+NOTE: We have a persistent repository at [OpenICPSR](https://www.openicpsr.org/openicpsr/project/127301/version/V1/view) (Dated 24 Nov 2020). 
 
 This [Github page](https://desmond-ong.github.io/resourceUse/) ([repository](https://github.com/desmond-ong/resourceUse)) contains materials for the following paper:
 
@@ -15,7 +15,7 @@ This repository is maintained by Desmond Ong. Questions, comments, requests for 
 The code required to reproduce all our analyses, figures, and tables, are given in:
 [EEP_resourceUse_public_cleaned.rmd](EEP_resourceUse_public_cleaned.rmd).
 
-Which is a R Markdown document, run in RStudio. (Dated 24 Nov 2020)
+Which is a R Markdown document, run in RStudio. (Analysis code dated 24 Nov 2020)
 
 Please see the accompanying Data Access Statement for information about data access.
 
